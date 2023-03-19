@@ -22,10 +22,11 @@ def clip_image(image):
 
 #檢測背景
 def crop_and_resize_image(image, label, size, display=False):
+    label = np.where(label == 1, 1, 0).astype('int64')
     if np.min(image) < 0 :
         image = clip_image(image)
-    cropped_image = np.zeros((image.shape[0], size, size))
-    cropped_label = np.zeros((image.shape[0], size, size))
+    final_image = np.zeros((image.shape[0], size, size))
+    final_label = np.zeros((image.shape[0], size, size))
     for slice in range(image.shape[0]) :
 
         # Create a mask with the background pixels
@@ -36,39 +37,42 @@ def crop_and_resize_image(image, label, size, display=False):
 
 
         # Find the brain area
-
         coords = np.array(np.nonzero(~mask))
-
-        top_left = np.min(coords, axis=1)
-
-        bottom_right = np.max(coords, axis=1)
-        cropped_image = img_slice[top_left[0]:bottom_right[0],
-                                top_left[1]:bottom_right[1]]
-        cropped_label = label_slice[top_left[0]:bottom_right[0],
-                                top_left[1]:bottom_right[1]]
+        if (coords.ndim and coords.size) != 0 :
+            top_left = np.min(coords, axis=1)
+    
+            bottom_right = np.max(coords, axis=1)
+            cropped_image = img_slice[top_left[0]:bottom_right[0],
+                                    top_left[1]:bottom_right[1]].astype('float32')
+            cropped_label = label_slice[top_left[0]:bottom_right[0],
+                                    top_left[1]:bottom_right[1]]
+            
+            h, w = cropped_image.shape[:2]
+            c = cropped_image.shape[2] if len(cropped_image.shape)>2 else 1
+            if h == w: 
+                image_processed = cv2.resize(cropped_image, (size,size), cv2.INTER_AREA)
+                label_processed = transform.resize(cropped_label, (size,size), order=0)
+            else :
+                dif = h if h > w else w
         
-        h, w = cropped_image.shape[:2]
-        c = cropped_image.shape[2] if len(cropped_image.shape)>2 else 1
-        if h == w: 
-            return cv2.resize(cropped_image, size, cv2.INTER_AREA)
-
-        dif = h if h > w else w
-
-        interpolation = cv2.INTER_AREA if dif > (size[0]+size[1])//2 else cv2.INTER_CUBIC
-        x_pos = (dif - w)//2
-        y_pos = (dif - h)//2
-        if len(cropped_image.shape) == 2:
-            mask_image = np.zeros((dif, dif), dtype=cropped_image.dtype)
-            mask_image[y_pos:y_pos+h, x_pos:x_pos+w] = cropped_image[:h, :w]
-            mask_label = np.zeros((dif, dif), dtype=cropped_image.dtype)
-            mask_label[y_pos:y_pos+h, x_pos:x_pos+w] = cropped_image[:h, :w]
-        else:
-            mask_image = np.zeros((dif, dif, c), dtype=cropped_image.dtype)
-            mask_image[y_pos:y_pos+h, x_pos:x_pos+w, :] = cropped_image[:h, :w, :]
-            mask_label = np.zeros((dif, dif), dtype=cropped_image.dtype)
-            mask_label[y_pos:y_pos+h, x_pos:x_pos+w] = cropped_image[:h, :w]
-        image_processed = cv2.resize(mask_image, (size,size), interpolation)
-        label_processed = cv2.resize(mask_label, (size,size), interpolation)
+                interpolation = cv2.INTER_AREA if dif > (size+size)//2 else cv2.INTER_CUBIC
+                x_pos = (dif - w)//2
+                y_pos = (dif - h)//2
+                if len(cropped_image.shape) == 2:
+                    mask_image = np.zeros((dif, dif), dtype=cropped_image.dtype)
+                    mask_image[y_pos:y_pos+h, x_pos:x_pos+w] = cropped_image[:h, :w]
+                    mask_label = np.zeros((dif, dif), dtype=cropped_label.dtype)
+                    mask_label[y_pos:y_pos+h, x_pos:x_pos+w] = cropped_label[:h, :w]
+                else:
+                    mask_image = np.zeros((dif, dif, c), dtype=cropped_image.dtype)
+                    mask_image[y_pos:y_pos+h, x_pos:x_pos+w, :] = cropped_image[:h, :w, :]
+                    mask_label = np.zeros((dif, dif), dtype=cropped_label.dtype)
+                    mask_label[y_pos:y_pos+h, x_pos:x_pos+w] = cropped_label[:h, :w]
+                image_processed = cv2.resize(mask_image, (size,size), interpolation)
+                label_processed = transform.resize(mask_label, (size,size), order=0)
+        else :
+            image_processed = cv2.resize(img_slice, (size,size), interpolation)
+            label_processed = transform.resize(label_slice, (size,size), order=0)
         # image_processed = transform.resize(img_slice[top_left[0]:bottom_right[0],
         #                         top_left[1]:bottom_right[1]], (size, size))
         # label_processed = transform.resize(label_slice[top_left[0]:bottom_right[0],
@@ -77,9 +81,9 @@ def crop_and_resize_image(image, label, size, display=False):
 
         # Remove the background
 
-        cropped_image[slice,:,:] = image_processed
-        cropped_label[slice,:,:] = label_processed
-    return cropped_image, cropped_label
+        final_image[slice,:,:] = image_processed
+        final_label[slice,:,:] = label_processed
+    return final_image, final_label
 
 def normalise_zero_one(image):
     """Image normalisation. Normalises image to fit [0, 1] range."""
@@ -117,6 +121,7 @@ def resample_img(itk_image, out_spacing=[0.7, 0.7, 1.5], is_label=False):
     resample.SetDefaultPixelValue(itk_image.GetPixelIDValue())
 
     if is_label:
+        itk_image = sitk.Clamp(itk_image,upperBound=1)
         resample.SetInterpolator(sitk.sitkNearestNeighbor)
     else:
         resample.SetInterpolator(sitk.sitkBSpline)
@@ -148,10 +153,12 @@ class HecktorDataset_one_patient(torch.utils.data.Dataset):
         # mask_sitk = mask_sitk[mask_sitk.shape[0]-81:mask_sitk.shape[0]-1,
         #                       img_center-250:img_center+182, img_center-216:img_center+216]
         img_sitk = normalise_zero_one(img_sitk)
-        mask_sitk = np.where(mask_sitk == 1, 1, 0)
+        mask_sitk = np.where(mask_sitk != 1, 1, 0).astype('int64')
         # img_sitk, mask_sitk = crop_image(img_sitk, mask_sitk)
-        # img_sitk = transform.resize(img_sitk, (80, 256, 256))
-        # mask_sitk = transform.resize(mask_sitk, (80, 256, 256), order=0)
+        img_sitk = transform.resize(img_sitk, (80, 256, 256))
+        mask_sitk = transform.resize(mask_sitk, (80, 256, 256), order=0)
+        img_sitk = np.expand_dims(img_sitk, axis=0)
+        mask_sitk = np.expand_dims(mask_sitk, axis=0)
         return img_sitk, mask_sitk
 
     def __len__(self):
